@@ -32,7 +32,7 @@ See the [Releases](../../releases) page (demo videos) and [`docs/`](docs/).
 | Auto-brightness (toggle in Settings), French/any locale | ✅ |
 | USB-C accessories (host mode switching, USB sticks auto-mounted in `~/USB`) | 🧪 untested with real hardware |
 | Firefox, Chromium, GNOME Software (Flathub + Alpine packages) | ✅ |
-| Fingerprint reader | ❌ (behind the TrustZone, not reachable from Linux) |
+| **Fingerprint reader**: enroll, unlock the lock screen, managed in Mobile Settings ([`docs/FINGERPRINT.md`](docs/FINGERPRINT.md)) | ✅ (new) |
 | MMS | ❌ (needs a second data bearer) |
 
 ## How it works
@@ -72,8 +72,9 @@ Android then starts from a fresh setup screen.
 
 ## Known issues
 
-- **Lock screen:** enabling Phosh's lock screen makes the display driver crash (screens freeze or go black).
-  The lock screen is therefore **disabled** for now. Help welcome!
+- **Lock screen:** enabling Phosh's lock screen used to make the display driver crash (screens freeze or go black),
+  so automatic locking is **off** by default. Locking/waking worked in recent testing; turn it on in
+  Mobile Settings → Surface Duo and report any freeze.
 - Camera preview in portrait is obtained by running the camera inside a rotated nested compositor
   (controls end up on the side); direction set in `/etc/duo/camera-rotation`.
 - The USB network link to the PC can drop during big transfers (the installer sends data in verified chunks).
@@ -112,8 +113,9 @@ caméra, capteurs (postures de la charnière, rotation auto, mode PC portable) e
   depuis les partitions de **votre** téléphone, en lecture seule.
 - **Revenir à Android :** `./installer/duo.sh restore-android <sauvegarde boot_b.img>`.
 
-- **Problème connu :** activer l'écran de verrouillage de Phosh fait planter le pilote des écrans ; il est désactivé
-  pour l'instant. Toute aide est bienvenue.
+- **Écran de verrouillage :** il faisait planter le pilote des écrans, le verrouillage automatique est donc désactivé
+  par défaut. Il a fonctionné lors des derniers essais : à activer dans Réglages mobiles → Surface Duo.
+- **Lecteur d'empreintes :** fonctionne (enregistrement, déverrouillage), voir [`docs/FINGERPRINT.md`](docs/FINGERPRINT.md).
 - **Projet open source (GPL-3.0)** : issues, pull requests et tests bienvenus, voir [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 Ce qui marche, comment ça marche et les remerciements : voir la partie anglaise ci-dessus.

@@ -1,0 +1,40 @@
+#!/usr/bin/python3 -I
+"""duo-pam-session CMD...: run CMD inside an elogind session (PAM service duo-session, pam_elogind).
+Phosh finds its session with sd_pid_get_session(); without one, logind's Unlock (used by duo-fpunlock) never reaches it."""
+import ctypes, os, sys
+
+pam = ctypes.CDLL('libpam.so.0')
+CONV = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+
+class Conv(ctypes.Structure):
+    _fields_ = [('conv', CONV), ('appdata', ctypes.c_void_p)]
+
+@CONV
+def no_conv(n, msg, resp, data):
+    return 19                                   # PAM_CONV_ERR: the session stack never asks anything
+
+for k, v in (('XDG_SESSION_TYPE', 'wayland'), ('XDG_SESSION_CLASS', 'user'), ('XDG_SEAT', 'seat0'),
+             ('XDG_SESSION_DESKTOP', 'phosh')):
+    os.environ.setdefault(k, v)
+h = ctypes.c_void_p()
+conv = Conv(no_conv, None)
+r = pam.pam_start(b'duo-session', b'root', ctypes.byref(conv), ctypes.byref(h))
+if r == 0:
+    for k in ('XDG_SESSION_TYPE', 'XDG_SESSION_CLASS', 'XDG_SEAT', 'XDG_SESSION_DESKTOP'):
+        pam.pam_putenv(h, ('%s=%s' % (k, os.environ[k])).encode())
+    pam.pam_set_item(h, 3, b'tty1')             # PAM_TTY
+    r = pam.pam_open_session(h, 0)
+if r != 0:
+    sys.stderr.write('duo-pam-session: no elogind session (pam %d), running without one\n' % r)
+    os.execvp(sys.argv[1], sys.argv[1:])
+envp = pam.pam_getenvlist
+envp.restype = ctypes.POINTER(ctypes.c_char_p)
+lst = envp(h); i = 0
+while lst and lst[i]:
+    k, _, v = lst[i].decode().partition('='); os.environ[k] = v; i += 1
+pid = os.fork()
+if pid == 0:
+    os.execvp(sys.argv[1], sys.argv[1:])
+_, st = os.waitpid(pid, 0)
+pam.pam_close_session(h, 0); pam.pam_end(h, 0)
+sys.exit(os.waitstatus_to_exitcode(st))

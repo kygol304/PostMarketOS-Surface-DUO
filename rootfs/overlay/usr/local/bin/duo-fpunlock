@@ -1,0 +1,134 @@
+#!/usr/bin/python3 -I
+"""duo-fpunlock: unlock Phosh with the Surface Duo's fingerprint sensor.
+
+Keeps the FPC trustlet loaded with the saved template database. While the Phosh session is locked
+(logind LockedHint, set by Phosh), it arms the sensor; on a matching finger it asks logind to unlock the
+session (Phosh 0.47 unlocks on logind's Unlock signal). Needs: qlisten (TrustZone listeners), Phosh running
+inside an elogind session (duo-pam-session), an enrolled finger (duo-fingerprint enroll).
+Log: /var/log/duo-fpunlock.log.  Stop it before enrolling (only one process may hold the trustlet)."""
+import os, struct, subprocess, sys, time
+HERE = '/usr/local/lib/duo-fingerprint'
+sys.path.insert(0, HERE)
+
+LOG = '/var/log/duo-fpunlock.log'
+DB = '/data/vendor_de/0/fpdata/user.db'
+HOSTDB = '/var/lib/duo-tz' + DB
+OFF = '/etc/duo/fingerprint-unlock-off'    # `duo-fingerprint unlock off` creates it
+
+
+def log(m):
+    with open(LOG, 'a') as f:
+        f.write(time.strftime('%d/%m %H:%M:%S ') + m + '\n')
+
+
+def sh(*a):
+    return subprocess.run(a, capture_output=True, text=True, timeout=10).stdout.strip()
+
+
+def listeners_up():
+    try:
+        pids = open('/run/qlisten.pids').read().split()
+        return pids and all(os.path.exists('/proc/' + p) for p in pids)
+    except OSError:
+        return False
+
+
+def session():
+    """the seat0 session Phosh runs in"""
+    for line in sh('loginctl', 'list-sessions', '--no-legend').splitlines():
+        f = line.split()
+        if len(f) >= 4 and f[3] == 'seat0':
+            return f[0]
+    return None
+
+
+def locked(sid):
+    return sh('loginctl', 'show-session', sid, '-p', 'LockedHint', '--value') == 'yes'
+
+
+def open_fpc():
+    import fp2
+    from km import KM
+    b = fp2.Bio()
+    k = KM(); k.setup()
+    st, key = k.auth_token_key()
+    if st == 0:
+        b.big(3, 5, key)
+    b.sensor(0); b.sensor(5)
+    q, st, _ = b.big(2, 11, DB.encode() + b'\0')
+    q, st2, buf = b.small(11, 7, lambda m: m.__setitem__(slice(0xc, 0x10), struct.pack('<I', 5)))
+    n = fp2.u32(buf, 0xc)
+    log('trustlet loaded, db load %d, %d finger(s) enrolled' % (st, n))
+    return b, n
+
+
+def identify_once(b, sid):
+    """arm, wait for a finger while still locked, capture, identify. Returns matched id, 0, or None (no touch)."""
+    import fp2
+    from fptest import irq_wait
+    for _ in range(50):                               # wait until no finger is on the sensor
+        q, st, _ = b.sensor(1, 1)
+        if st > 0:
+            break
+        time.sleep(0.02)
+    b.sensor(3, 1)
+    while True:
+        if irq_wait(1.0):
+            break
+        if not locked(sid):
+            b.sensor(5)
+            return None
+    q, st, _ = b.sensor(4, 1)
+    if st != 0:
+        log('capture not usable (%d)' % st)
+        return 0
+    b.small(3, 1, lambda m: m.__setitem__(slice(8, 16), struct.pack('<Q', 0)))
+    q, s3, buf3 = b.small(11, 3)
+    b.small(11, 4)
+    return fp2.u32(buf3, 0xc) if s3 == 0 else 0
+
+
+def main():
+    log('starting')
+    if not listeners_up():
+        subprocess.Popen([sys.executable, '-I', HERE + '/qlisten.py', 'start'], stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+        time.sleep(3)
+        log('TrustZone listeners started')
+    while not os.path.exists(HOSTDB):
+        time.sleep(10)                                # nothing enrolled yet
+    b, n = open_fpc()
+    import fp2
+    sid = None
+    while True:
+        try:
+            sid = sid or session()
+            if os.path.exists(OFF) or not sid or not locked(sid):
+                if sid and not session():
+                    sid = None                        # session ended (Phosh restarted)
+                time.sleep(1)
+                continue
+            fid = identify_once(b, sid)
+            if fid is None:
+                continue
+            if fid:
+                log('finger %d matched: unlocking session %s' % (fid, sid))
+                sh('loginctl', 'unlock-session', sid)
+                fp2.BUS = fp2.session_env(); fp2.buzz()
+                time.sleep(2)
+            else:
+                log('finger not recognised')
+                fp2.BUS = fp2.session_env(); fp2.buzz('message-new-sms')
+                time.sleep(0.5)
+        except Exception as e:
+            log('error %r: reloading the trustlet' % (e,))
+            try:
+                b.close()
+            except Exception:
+                pass
+            time.sleep(3)
+            b, n = open_fpc()
+
+
+if __name__ == '__main__':
+    main()

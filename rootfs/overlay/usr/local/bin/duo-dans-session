@@ -1,7 +1,7 @@
 #!/bin/sh
 # Tout ce qui doit tourner DANS la session D-Bus de Phosh (lancé par duo-phosh via dbus-run-session)
 # réglages GNOME (enregistrés dans la session, sinon perdus) : pas de verrouillage automatique
-gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
+gsettings set org.gnome.desktop.screensaver lock-enabled $([ -f /etc/duo/autolock ] && echo true || echo false) 2>/dev/null   # duo-fingerprint autolock on|off
 gsettings set org.gnome.desktop.screensaver ubuntu-lock-on-suspend false 2>/dev/null
 # clavier visuel en AZERTY (français)
 gsettings set org.gnome.desktop.input-sources sources "[('xkb', 'fr')]" 2>/dev/null

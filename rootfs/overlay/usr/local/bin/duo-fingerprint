@@ -1,0 +1,42 @@
+#!/bin/sh
+# duo-fingerprint: manage fingerprints and lock settings on the Surface Duo (see duo-fingerprint help)
+L=/usr/local/lib/duo-fingerprint
+run_tool() {   # the trustlet can only be held by one process: pause the unlock daemon while the tool runs
+	pkill -f /usr/local/bin/duo-fpunlock; sleep 1
+	if [ "$1" = enroll ]; then
+		python3 -I -u $L/fp2.py "$@" 2>&1     # unfiltered: the Mobile Settings page reads progress line by line
+	else
+		python3 -I $L/fp2.py "$@" 2>&1 | grep -E "^(FINGERS|  finger|delete|saved|SAVE|usage)"
+	fi
+	(/usr/local/bin/duo-fpunlock > /dev/null 2>&1 &)
+}
+session_set() {  # change a GNOME setting inside the running Phosh session
+	B=$(tr '\0' '\n' < /proc/$(pidof phosh)/environ 2>/dev/null | grep ^DBUS_SESSION_BUS_ADDRESS= | cut -d= -f2-)
+	[ -n "$B" ] && DBUS_SESSION_BUS_ADDRESS=$B gsettings set "$@"
+}
+case "$1 $2" in
+  "list "*)      run_tool list ;;
+  "enroll "*)    run_tool enroll ;;
+  "delete "*)    [ -n "$2" ] || { echo "usage: duo-fingerprint delete <finger id>|all"; exit 1; }; run_tool delete "$2" ;;
+  "unlock on")   rm -f /etc/duo/fingerprint-unlock-off; echo "fingerprint unlock: on" ;;
+  "unlock off")  touch /etc/duo/fingerprint-unlock-off; echo "fingerprint unlock: off (PIN only)" ;;
+  "autolock on") touch /etc/duo/autolock; session_set org.gnome.desktop.screensaver lock-enabled true
+                 echo "automatic lock: on (locks when the screen turns off)" ;;
+  "autolock off") rm -f /etc/duo/autolock; session_set org.gnome.desktop.screensaver lock-enabled false
+                 echo "automatic lock: off" ;;
+  "status "*)    echo "fingerprint unlock: $([ -f /etc/duo/fingerprint-unlock-off ] && echo off || echo on)"
+                 echo "automatic lock: $([ -f /etc/duo/autolock ] && echo on || echo off)"
+                 echo "daemon: $(pgrep -f /usr/local/bin/duo-fpunlock > /dev/null && echo running || echo stopped)"
+                 tail -3 /var/log/duo-fpunlock.log ;;
+  "restart "*)   pkill -f /usr/local/bin/duo-fpunlock; sleep 1; (/usr/local/bin/duo-fpunlock > /dev/null 2>&1 &); echo restarted ;;
+  *) cat <<'H'
+duo-fingerprint list            show enrolled fingers (up to 5)
+duo-fingerprint enroll          add a finger (follow the prompts on screen)
+duo-fingerprint delete ID|all   remove a finger
+duo-fingerprint unlock on|off   use the fingerprint on the lock screen (PIN always works)
+duo-fingerprint autolock on|off lock automatically when the screen turns off
+duo-fingerprint status          show the settings and the last log lines
+duo-fingerprint restart         restart the unlock daemon
+H
+     ;;
+esac

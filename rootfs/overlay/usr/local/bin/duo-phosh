@@ -12,7 +12,7 @@ dbus-daemon --system --fork 2>/dev/null
 (/usr/libexec/accounts-daemon >/dev/null 2>&1 &)
 (/usr/libexec/apk-polkit/apk-polkit-server > /tmp/apk-polkit.log 2>&1 &)   # logithèque : paquets Alpine (dev.Cogitri.apkPolkit2)
 (NetworkManager --no-daemon > /tmp/nm.log 2>&1 &)
-gsettings set org.gnome.desktop.screensaver lock-enabled false 2>/dev/null
+gsettings set org.gnome.desktop.screensaver lock-enabled $([ -f /etc/duo/autolock ] && echo true || echo false) 2>/dev/null   # duo-fingerprint autolock on|off
 # dalles au niveau du noyau (méthode Matrix « duo-panels beide ») : couper le connecteur fantôme Virtual-1
 # (il prend des ressources d'affichage et fige DSI-2), forcer DSI-1 et DSI-2 allumés
 echo off > /sys/class/drm/card0-Virtual-1/status 2>/dev/null
@@ -32,9 +32,11 @@ export XDG_CURRENT_DESKTOP=Phosh:GNOME XDG_SESSION_DESKTOP=phosh XDG_SESSION_TYP
 # session D-Bus : réglages GNOME, son (PipeWire), touche Power, puis phoc + phosh + clavier
 # relancée automatiquement si elle s'arrête (plantage de phoc/phosh) : sinon écran noir définitif.
 # Le journal de la session plantée est gardé dans /tmp/phosh-plantage-HHMMSS.log
+# empreinte : écouteurs TrustZone + déverrouillage par empreinte (duo-fpunlock, docs/FINGERPRINT.md)
+(pgrep -f duo-fpunlock > /dev/null || /usr/local/bin/duo-fpunlock > /dev/null 2>&1 &)
 while true; do
 	mkdir -p $XDG_RUNTIME_DIR; chmod 700 $XDG_RUNTIME_DIR
-	dbus-run-session -- /usr/local/bin/duo-dans-session > /tmp/phosh.log 2>&1
+	/usr/local/bin/duo-pam-session dbus-run-session -- /usr/local/bin/duo-dans-session > /tmp/phosh.log 2>&1
 	cp /tmp/phosh.log /tmp/phosh-plantage-$(date +%H%M%S).log
 	killall phosh squeekboard phoc waybar pipewire wireplumber pipewire-pulse duo-power callaudiod gnome-calls chatty gsd-wwan gsd-rfkill 2>/dev/null
 	rm -f /run/duo/clavier-ecran

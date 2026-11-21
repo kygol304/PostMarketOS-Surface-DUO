@@ -1,0 +1,2 @@
+# duo-pam-session: puts the Phosh session inside an elogind session (needed for logind Lock/Unlock)
+session  required pam_elogind.so
