@@ -1,0 +1,86 @@
+#!/usr/bin/python3 -I
+"""duo-brightness: backend for Phosh's brightness slider.
+
+Phosh 0.47's slider only talks to gsd-power (org.gnome.SettingsDaemon.Power.Screen, property Brightness 0-100),
+which this port doesn't run (it would take over the Power key). This provides just that interface on the session
+bus and writes panel0's backlight; duo-posture copies it to panel 1, duo-sensorproxy's auto-brightness keeps
+writing panel0 too (its changes show up on the slider). Started by duo-dans-session.
+"""
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+BL = "/sys/class/backlight/panel0-backlight/"
+NAME, PATH, IFACE = "org.gnome.SettingsDaemon.Power", "/org/gnome/SettingsDaemon/Power", "org.gnome.SettingsDaemon.Power.Screen"
+XML = """<node><interface name="%s">
+  <property name="Brightness" type="i" access="readwrite"/>
+  <method name="StepUp"><arg type="i" name="new_percentage" direction="out"/><arg type="s" name="output_id" direction="out"/></method>
+  <method name="StepDown"><arg type="i" name="new_percentage" direction="out"/><arg type="s" name="output_id" direction="out"/></method>
+  <method name="Cycle"><arg type="i" name="new_percentage" direction="out"/><arg type="s" name="output_id" direction="out"/></method>
+</interface></node>""" % IFACE
+MIN = 2                                    # raw minimum: 0/1 can switch the panel off
+
+
+def read_int(f, default):
+    try:
+        return int(open(BL + f).read())
+    except (OSError, ValueError):
+        return default
+
+
+MAX = read_int("max_brightness", 255)
+conn, last = None, None
+
+
+def get_pct():
+    raw = read_int("brightness", MAX)
+    return max(0, min(100, round((raw - MIN) * 100 / (MAX - MIN))))
+
+
+def set_pct(p):
+    p = max(0, min(100, int(p)))
+    raw = MIN + round(p * (MAX - MIN) / 100)
+    try:
+        with open(BL + "brightness", "w") as f:
+            f.write(str(raw))
+    except OSError:
+        pass
+    notify()
+    return p
+
+
+def notify():
+    """tell Phosh when the value changed (slider, auto-brightness, other tools)"""
+    global last
+    p = get_pct()
+    if conn and p != last:
+        last = p
+        conn.emit_signal(None, PATH, "org.freedesktop.DBus.Properties", "PropertiesChanged",
+                         GLib.Variant("(sa{sv}as)", (IFACE, {"Brightness": GLib.Variant("i", p)}, [])))
+    return True
+
+
+def on_call(c, sender, path, iface, method, params, inv):
+    p = get_pct()
+    p = set_pct(p + 10 if method == "StepUp" else p - 10 if method == "StepDown" else (p + 25) % 125)
+    inv.return_value(GLib.Variant("(is)", (p, "DSI-1")))
+
+
+def on_get(c, sender, path, iface, prop):
+    return GLib.Variant("i", get_pct())
+
+
+def on_set(c, sender, path, iface, prop, value):
+    set_pct(value.unpack())
+    return True
+
+
+def on_bus(c, name):
+    global conn
+    conn = c
+    c.register_object(PATH, Gio.DBusNodeInfo.new_for_xml(XML).interfaces[0], on_call, on_get, on_set)
+
+
+Gio.bus_own_name(Gio.BusType.SESSION, NAME, Gio.BusNameOwnerFlags.NONE, on_bus, None, None)
+GLib.timeout_add(1000, notify)
+GLib.MainLoop().run()

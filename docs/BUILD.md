@@ -21,5 +21,7 @@ Everything here was built on Debian (WSL2) with an aarch64 cross toolchain and `
 - `usr/local/sbin/duo-veille` — deep sleep (pauses audio and USB, RTC wake for alarms)
 - `usr/local/sbin/duo-usb-hote` — USB-C host/peripheral switching, USB stick mounting
 - `usr/local/bin/duo-retour`, `duo-ecrans` — edge-swipe Back, 3-finger window moves (lisgd)
+- `usr/local/bin/duo-brightness`, `duo-session-manager` — backends for Phosh's brightness slider and power menu
+- `usr/local/bin/duo-touch-test`, `etc/duo/touch.conf` — touch accuracy test and per-panel calibration (read by `tools/duoheat.c`)
 
 Comments in the scripts are in French; issues and pull requests in English or French are welcome.

@@ -1,0 +1,71 @@
+#!/usr/bin/python3 -I
+"""duo-touch-test [A|B]: touch accuracy test for one screen of the Surface Duo.
+
+Shows 12 targets (3 columns x 4 rows) full screen on the chosen panel (A = DSI-1, B = DSI-2), one at a time.
+Tap the centre of each. Records where the touch was reported (what apps receive, after duoheat's mapping) and
+writes /root/duo-touch-<A|B>.json: target and reported positions in physical pixels (1350x1800 panel).
+"""
+import json, sys, time
+import gi
+gi.require_version("Gtk", "4.0")
+from gi.repository import Gtk, Gdk, GLib
+
+PANEL = (sys.argv[1] if len(sys.argv) > 1 else "A").upper()
+CONNECTOR = {"A": "DSI-1", "B": "DSI-2"}[PANEL]
+COLS, ROWS = (0.1, 0.5, 0.9), (0.08, 0.36, 0.64, 0.92)       # near the edges too: that's where errors show
+TARGETS = [(c, r) for r in ROWS for c in COLS]
+
+
+class Test(Gtk.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Touch test " + PANEL)
+        self.i, self.res, self.scale = 0, [], 2
+        self.area = Gtk.DrawingArea()
+        self.area.set_draw_func(self.draw)
+        self.set_child(self.area)
+        g = Gtk.GestureClick(); g.set_touch_only(False)
+        g.connect("pressed", self.on_press)
+        self.area.add_controller(g)
+        mon = next((m for m in Gdk.Display.get_default().get_monitors() if m.get_connector() == CONNECTOR), None)
+        if mon:
+            self.scale = mon.get_scale_factor()
+            self.fullscreen_on_monitor(mon)
+        else:
+            self.fullscreen()
+
+    def target(self):
+        w, h = self.area.get_width(), self.area.get_height()
+        c, r = TARGETS[self.i]
+        return c * w, r * h, w, h
+
+    def draw(self, area, cr, w, h):
+        cr.set_source_rgb(0, 0, 0); cr.paint()
+        cr.set_source_rgb(1, 1, 1)
+        cr.select_font_face("Sans"); cr.set_font_size(22)
+        if self.i >= len(TARGETS):
+            cr.move_to(40, h / 2); cr.show_text("Done - saved. You can close this."); return
+        tx, ty, _, _ = self.target()
+        cr.move_to(40, h / 2 - 60 if ty > h / 2 else h / 2 + 60)
+        cr.show_text("Screen %s: tap the centre of the cross (%d/%d)" % (PANEL, self.i + 1, len(TARGETS)))
+        cr.set_source_rgb(0.2, 0.8, 1); cr.set_line_width(2)
+        cr.move_to(tx - 30, ty); cr.line_to(tx + 30, ty); cr.move_to(tx, ty - 30); cr.line_to(tx, ty + 30); cr.stroke()
+        cr.arc(tx, ty, 12, 0, 6.3); cr.stroke()
+        for (x, y) in [(r["got"][0] / self.scale, r["got"][1] / self.scale) for r in self.res]:
+            cr.set_source_rgb(1, 0.3, 0.3); cr.arc(x, y, 4, 0, 6.3); cr.fill()
+
+    def on_press(self, g, n, x, y):
+        if self.i >= len(TARGETS):
+            return
+        tx, ty, w, h = self.target()
+        s = self.scale
+        self.res.append({"target": [round(tx * s), round(ty * s)], "got": [round(x * s), round(y * s)]})
+        self.i += 1
+        if self.i == len(TARGETS):
+            json.dump({"panel": PANEL, "size": [round(w * s), round(h * s)], "points": self.res},
+                      open("/root/duo-touch-%s.json" % PANEL, "w"), indent=1)
+        self.area.queue_draw()
+
+
+app = Gtk.Application(application_id="org.duo.TouchTest" + PANEL)
+app.connect("activate", lambda a: Test(a).present())
+app.run(None)

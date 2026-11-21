@@ -1,8 +1,36 @@
 #!/bin/sh
-# Caméra en portrait : l'appli de Matrix dessine l'aperçu dans le sens du capteur (paysage). On la lance dans un
-# phoc imbriqué dont la sortie est tournée -> aperçu à l'endroit en plein écran (boutons sur le côté).
-# Sens : /etc/duo/camera-rotation (90 par défaut ; mettre 270 si l'image est à l'envers).
+# Caméra à l'endroit : l'appli de Matrix dessine l'aperçu dans le sens du capteur (paysage). On la lance dans un
+# phoc imbriqué dont la sortie est tournée. La rotation suit celle de l'écran (rotation auto / mode portable) :
+# rotation imbriquée = base - rotation de l'écran, recalculée en continu, pour que l'aperçu reste à l'endroit
+# quelle que soit la façon de tenir le Duo. Dans ce sens l'appli n'affiche pas son bouton : Volume + / - prend la photo.
+# Base (écran en portrait normal) : /etc/duo/camera-rotation (90 par défaut ; 270 si l'image est à l'envers).
 R=$(cat /etc/duo/camera-rotation 2>/dev/null); R=${R:-90}
 C=/tmp/duo-camera-phoc.ini
+N=/tmp/duo-camera-nested                       # nom de l'affichage Wayland du phoc imbriqué
 printf '[core]\nxwayland=false\n\n[output:WL-1]\nrotate=%s\nscale=1\n' "$R" > $C
-exec phoc -C $C -E /usr/local/bin/duo-camera
+EXT=$WAYLAND_DISPLAY
+rm -f $N /tmp/duo-camera-rot
+
+transform_ecran() {   # rotation (0/90/180/270) de l'écran (duo-posture tourne les deux écrans ensemble)
+	WAYLAND_DISPLAY=$EXT wlr-randr 2>/dev/null | awk -v o="${DUO_CAMERA_OUTPUT:-DSI-1}" '$1==o{f=1;next} /^[^ ]/{f=0}
+		f && /Transform:/{t=$2; if(t=="normal")t=0; print t; exit}'
+}
+
+suivre() {
+	for i in $(seq 50); do [ -s $N ] && break; sleep 0.2; done
+	INT=$(cat $N 2>/dev/null); [ -n "$INT" ] || return
+	/usr/local/bin/duo-camera-declencheur "$INT" &     # boutons de volume = déclencheur (pas de bouton à l'écran)
+	dernier=""
+	while pgrep -f "phoc -C $C" > /dev/null; do
+		t=$(transform_ecran); t=${t:-0}
+		case "$t" in 0|90|180|270) ;; *) t=0 ;; esac      # transformations miroir : on ignore
+		r=$(( (R - t + 360) % 360 )); [ "$r" = 0 ] && r=normal
+		if [ "$r" != "$dernier" ]; then
+			WAYLAND_DISPLAY=$INT wlr-randr --output WL-1 --transform $r 2>/dev/null && dernier=$r && echo $r > /tmp/duo-camera-rot
+		fi
+		sleep 0.5
+	done
+}
+
+suivre &
+exec phoc -C $C -E "sh -c 'echo \$WAYLAND_DISPLAY > $N; exec /usr/local/bin/duo-camera'"

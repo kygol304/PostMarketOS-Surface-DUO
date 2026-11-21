@@ -1,0 +1,74 @@
+#!/usr/bin/python3 -I
+"""duo-bwrap: bubblewrap for Flatpak on this port (FLATPAK_BWRAP=/usr/local/bin/duo-bwrap, set by duo-phosh).
+
+The session runs chrooted into /r from the initramfs, and Linux refuses to create a *user* namespace from inside a
+chroot (EPERM), so Flatpak's `bwrap --unshare-user ...` fails ("No permissions to create a new namespace") and no
+Flatpak app starts. Everything here runs as root, and root bwrap needs no user namespace for the rest of the sandbox
+(mount, pid, ipc, net namespaces, seccomp). This drops only the user-namespace options, from the command line and
+from the NUL-separated `--args FD` lists Flatpak passes, then runs the real bwrap.
+Electron apps also need ELECTRON_DISABLE_SANDBOX=1 (root) and Wayland: see /var/lib/flatpak/overrides/global.
+DUO_BWRAP_DEBUG=1 writes the argument lists to /tmp/duo-bwrap-args.PID.
+"""
+import os, sys
+
+DROP = {"--unshare-user", "--unshare-user-try", "--disable-userns", "--assert-userns-disabled"}
+WITH_VALUE = {"--userns", "--userns2", "--uid", "--gid"}      # user-namespace options that take a value
+REAL = "/usr/bin/bwrap"
+
+
+def filtered(args):
+    out, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a in DROP:
+            continue
+        if a in WITH_VALUE:
+            skip = True
+            continue
+        out.append(a)
+    return out
+
+
+argv, i = [], 1
+while i < len(sys.argv):
+    a = sys.argv[i]
+    if a == "--args" and i + 1 < len(sys.argv):
+        fd = int(sys.argv[i + 1])
+        data = b""
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            data += chunk
+        os.close(fd)
+        parts = data.split(b"\0")
+        if parts and parts[-1] == b"":
+            parts.pop()                               # only the terminator: empty arguments are real ("")
+        items = [x.decode("utf-8", "surrogateescape") for x in parts]
+        keep = filtered(items)
+        if os.environ.get("DUO_BWRAP_DEBUG"):
+            with open("/tmp/duo-bwrap-args.%d" % os.getpid(), "w") as dbg:
+                dbg.write("\n".join(items) + "\n===== kept\n" + "\n".join(keep) + "\n")
+        r, w = os.pipe()
+        payload = b"".join(x.encode("utf-8", "surrogateescape") + b"\0" for x in keep)
+        if len(payload) > 60000:                      # pipe buffer limit: use a temp file instead
+            import tempfile
+            t = tempfile.TemporaryFile(); t.write(payload); t.seek(0)
+            os.close(r); os.close(w); r = os.dup(t.fileno()); t.close()
+        else:
+            os.write(w, payload); os.close(w)
+        os.set_inheritable(r, True)
+        argv += ["--args", str(r)]
+        i += 2
+        continue
+    argv.append(a)
+    i += 1
+
+if "--" in argv:                                      # don't touch the command after "--"
+    k = argv.index("--")
+    argv = filtered(argv[:k]) + argv[k:]
+else:
+    argv = filtered(argv)
+os.execv(REAL, [REAL] + argv)

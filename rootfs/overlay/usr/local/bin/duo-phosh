@@ -19,6 +19,10 @@ echo off > /sys/class/drm/card0-Virtual-1/status 2>/dev/null
 echo on > /sys/class/drm/card0-DSI-1/status 2>/dev/null
 echo on > /sys/class/drm/card0-DSI-2/status 2>/dev/null
 udevadm trigger --action=change /sys/class/drm/card0 2>/dev/null
+# réactivité : plancher GPU 345 MHz au lieu de 257 (le gouverneur msm-adreno-tz monte trop tard pour les débuts
+# d'animation / de défilement) et bus mémoire non dissocié du GPU
+echo 345000000 > /sys/class/kgsl/kgsl-3d0/devfreq/min_freq 2>/dev/null
+echo 0 > /sys/class/kgsl/kgsl-3d0/bus_split 2>/dev/null
 # luminosité : Phosh ne règle que la dalle principale -> recopie sur la 2e (duo-blmirror de Matrix)
 pidof duo-blmirror >/dev/null || (/usr/local/bin/duo-blmirror > /tmp/blmirror.log 2>&1 &)
 # fenêtres déplaçables d'un écran à l'autre (3 doigts) une fois la session prête
@@ -29,6 +33,11 @@ export WLR_RENDERER=pixman LIBSEAT_BACKEND=noop GSK_RENDERER=cairo GDK_DISABLE=g
 # GPU (méthode Matrix) : OpenGL via Zink -> Vulkan Turnip sur KGSL. Désactivable : rm /etc/duo/gpu.env
 [ -f /etc/duo/gpu.env ] && . /etc/duo/gpu.env
 export XDG_CURRENT_DESKTOP=Phosh:GNOME XDG_SESSION_DESKTOP=phosh XDG_SESSION_TYPE=wayland
+# applis Flatpak (Logiciels / Flathub) visibles dans la grille de Phosh ; Electron en Wayland natif (pas de Xwayland)
+export XDG_DATA_DIRS=/root/.local/share/flatpak/exports/share:/var/lib/flatpak/exports/share:/usr/local/share:/usr/share
+export ELECTRON_OZONE_PLATFORM_HINT=auto
+# Flatpak : la session est chrootée, Linux y refuse les espaces de noms utilisateur -> bwrap sans --unshare-user
+export FLATPAK_BWRAP=/usr/local/bin/duo-bwrap
 # session D-Bus : réglages GNOME, son (PipeWire), touche Power, puis phoc + phosh + clavier
 # relancée automatiquement si elle s'arrête (plantage de phoc/phosh) : sinon écran noir définitif.
 # Le journal de la session plantée est gardé dans /tmp/phosh-plantage-HHMMSS.log

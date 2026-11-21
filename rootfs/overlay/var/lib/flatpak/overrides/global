@@ -1,0 +1,6 @@
+[Context]
+sockets=wayland;
+
+[Environment]
+ELECTRON_DISABLE_SANDBOX=1
+ELECTRON_OZONE_PLATFORM_HINT=wayland

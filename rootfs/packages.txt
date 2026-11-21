@@ -115,3 +115,8 @@ wofi
 wpa_supplicant
 wvkbd
 xkeyboard-config
+py3-cairo
+gnome-software-plugin-apk
+curl
+wtype
+wlrctl

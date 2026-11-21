@@ -18,11 +18,26 @@ NOMS = {0: "CLOSED", 1: "PEEK_RIGHT", 2: "PEEK_LEFT", 3: "READ", 4: "COMPOSE", 5
 REPLIE_B, REPLIE_A = {9, 10}, {11, 12}
 BL = "/sys/class/backlight/%s-backlight/%s"
 PANNEAU = {"DSI-1": "panel0", "DSI-2": "panel1"}
+
+
+def _echelle():
+    """échelle de l'interface (/etc/duo/scale, défaut 2) : taille logique d'une dalle 1350x1800 = 1350/S x 1800/S"""
+    try:
+        v = float(open("/etc/duo/scale").read().split()[0])
+        return v if 1 <= v <= 4 else 2.0
+    except (OSError, ValueError, IndexError):
+        return 2.0
+
+
+ECHELLE = _echelle()
+SC = "%g" % ECHELLE                       # pour wlr-randr --scale
+LW, LH = round(1350 / ECHELLE), round(1800 / ECHELLE)   # 675 x 900 à l'échelle 2
 TOUCHE = {"DSI-1": "A", "DSI-2": "B"}
 
 
 def log(m):
-    print("duo-posture: " + m, flush=True)
+    t = time.time()
+    print("%s.%03d duo-posture: %s" % (time.strftime("%H:%M:%S", time.localtime(t)), int(t * 1000) % 1000, m), flush=True)
 
 
 def lire(p, d=None):
@@ -183,11 +198,11 @@ class Posture:
             # sortie coupée en mode replié -> rallumée ; si c'était DSI-1, Phosh était passé sur DSI-2 :
             # on fait « clignoter » DSI-2 pour qu'il revienne sur DSI-1 (son écran habituel)
             if self.coupee:
-                wl("--output", self.coupee, "--on", "--scale", "2", "--pos", "0,0" if self.coupee == "DSI-1" else "675,0")
+                wl("--output", self.coupee, "--on", "--scale", SC, "--pos", "0,0" if self.coupee == "DSI-1" else "%d,0" % LW)
                 if self.coupee == "DSI-1":
                     time.sleep(1)
                     wl("--output", "DSI-2", "--off"); time.sleep(1.5)
-                    wl("--output", "DSI-2", "--on", "--scale", "2", "--pos", "675,0")
+                    wl("--output", "DSI-2", "--on", "--scale", SC, "--pos", "%d,0" % LW)
                 self.coupee = None
         else:
             dos = "DSI-1" if v == "DSI-2" else "DSI-2"
@@ -196,7 +211,7 @@ class Posture:
             ecrire(BL % (PANNEAU[dos], "bl_power"), 4)
             # sortie de l'écran de dos vraiment coupée : Phosh (barre du haut, accueil) passe sur l'écran de face
             if self.coupee and self.coupee != dos:
-                wl("--output", self.coupee, "--on", "--scale", "2", "--pos", "0,0")
+                wl("--output", self.coupee, "--on", "--scale", SC, "--pos", "0,0")
                 time.sleep(1)
             wl("--output", dos, "--off")
             self.coupee = dos
@@ -238,8 +253,8 @@ class Posture:
                 t = lire("/etc/duo/portable-transform-inverse", "270") or "270"
                 haut, bas = "DSI-2", "DSI-1"
             wl("--output", haut, "--transform", t, "--pos", "0,0")
-            wl("--output", bas, "--transform", t, "--pos", "0,675")
-            ecrire(self.PORTABLE_ECRAN, "%s 615" % bas)   # écran + hauteur du clavier (675 - 60 de la barre)
+            wl("--output", bas, "--transform", t, "--pos", "0,%d" % LW)
+            ecrire(self.PORTABLE_ECRAN, "%s %d" % (bas, LW - 60))   # écran + hauteur du clavier (hauteur - 60 de la barre)
             reglage_session("sm.puri.Squeekboard", "scale-in-horizontal-screen-orientation", "2.0")  # clavier sur tout l'écran du bas (2.0 = maximum autorisé)
             barre_taches(bas)
             relancer_clavier()
@@ -254,7 +269,7 @@ class Posture:
             relancer_clavier()
             if self.mode == "deux":
                 wl("--output", "DSI-1", "--transform", "normal", "--pos", "0,0")
-                wl("--output", "DSI-2", "--transform", "normal", "--pos", "675,0")
+                wl("--output", "DSI-2", "--transform", "normal", "--pos", "%d,0" % LW)
             log("fin du mode portable")
 
     def miroir(self):
@@ -275,11 +290,11 @@ class Rotation:
     aux écrans doit d'abord être mesuré. Format (JSON) :
       {"axes": {"+y": "normal", "-y": "180", "+x": "gauche", "-x": "droite"},
        "transform": {"normal": "normal", "180": "180", "droite": "90", "gauche": "270"},
-       "seuil": 6.0}
+       "seuil": 6.0, "delai": 0.8}      (seuil : m/s² sur l'axe latéral ; delai : tenue avant de tourner, s)
     Orientation = sens dans lequel l'appareil est tourné ; disposition : normal = A|B côte à côte, 180 = B|A,
     droite (tourné horaire) = A au-dessus de B, gauche = B au-dessus de A. Verrou : fichier /run/duo/rotation-verrou."""
     CONF = "/etc/duo/rotation.conf"
-    L, H = 675, 900          # taille logique d'un panneau en portrait (1350x1800 à l'échelle 2)
+    L, H = LW, LH            # taille logique d'un panneau en portrait (675x900 à l'échelle 2)
 
     def __init__(self):
         self.conf = None
@@ -305,7 +320,10 @@ class Rotation:
             return                       # à plat ou entre deux : on garde l'orientation actuelle
         if o != self.cand:
             self.cand, self.cand_depuis = o, time.monotonic()
-        elif time.monotonic() - self.cand_depuis > 0.8:
+            ecrire("/run/duo/orientation", o)   # tenue réelle, sans attendre la rotation (lu par duo-camera-declencheur)
+            if o != self.ori:
+                log("rotation : nouvelle orientation vue %s (x=%.1f y=%.1f)" % (o, ax, ay))
+        elif time.monotonic() - self.cand_depuis > self.conf.get("delai", 0.8):   # rotation.conf "delai" (s)
             self.ori = o
 
     def appliquer(self, mode):
@@ -355,8 +373,10 @@ class Rotation:
         self.cle = cle
         if len(args) == 1:
             return
+        t0 = time.monotonic()
         r = subprocess.run(args, env=env, capture_output=True, text=True, timeout=8)
-        log("rotation %s (%s) : %s" % (ori, mode, "ok" if r.returncode == 0 else r.stderr.strip()[:120]))
+        log("rotation %s (%s) : %s en %.0f ms" % (ori, mode, "ok" if r.returncode == 0 else r.stderr.strip()[:120],
+                                                  (time.monotonic() - t0) * 1000))
         self.cle = cle
 
 

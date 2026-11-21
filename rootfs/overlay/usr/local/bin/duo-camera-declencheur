@@ -1,0 +1,229 @@
+#!/usr/bin/python3 -I
+"""duo-camera-declencheur WAYLAND_DISPLAY: shutter for the camera.
+
+With the preview upright, Matrix's camera fills its window with the picture and draws no shutter button (it only
+shows its controls in its sideways layout). It takes a photo on the Space key. This runs inside the camera's nested
+compositor (WAYLAND_DISPLAY of duo-camera-tournee's phoc) and
+  - covers the picture with a transparent layer-shell overlay: a tap anywhere takes the photo (a round button is
+    drawn at the bottom as a hint);
+  - also takes a photo on Volume up / Volume down (the volume changes too: Phosh still sees the keys).
+Both give the camera the keyboard focus back (wlrctl) and send it Space (wtype). The camera saves the sensor's
+landscape image whatever the orientation, so the new photo is then turned the way the phone was held (GdkPixbuf).
+Exits when the nested compositor is gone.
+"""
+import glob, os, struct, subprocess, sys, threading, time
+
+DISPLAY = sys.argv[1]
+os.environ["WAYLAND_DISPLAY"] = DISPLAY
+os.environ["GDK_BACKEND"] = "wayland"
+SOCK = os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/run/user/0"), DISPLAY)
+
+import gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("GtkLayerShell", "0.1")
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gtk, Gdk, GLib, GtkLayerShell
+
+KEYS = {114, 115}                           # KEY_VOLUMEDOWN, KEY_VOLUMEUP
+FMT = "llHHi"                               # struct input_event (64-bit)
+SIZE = struct.calcsize(FMT)
+last = 0.0
+
+
+def log(msg):
+    print("[declencheur]", msg, file=sys.stderr, flush=True)
+
+
+PHOTOS = os.path.expanduser("~/Bilder/Kamera")
+ROT = "/tmp/duo-camera-rot"
+# turn applied to the saved (sensor-landscape) photo so it comes out the way the phone was held. From the physical
+# orientation duo-posture writes as soon as the accelerometer sees it (/run/duo/orientation), not from the screen
+# rotation, which lags (a quick shot after turning the phone would come out sideways). Same rule as the preview
+# (duo-camera-tournee): turn = camera-rotation - screen transform for that orientation (counter-clockwise degrees).
+ORIENT = "/run/duo/orientation"
+TRANSFORM = {"normal": 0, "180": 180, "droite": 90, "gauche": 270}
+
+
+def rotation():
+    try:
+        return open(ROT).read().strip()
+    except OSError:
+        return "normal"
+
+
+def turn_for_shot():
+    try:
+        import json
+        tr = json.load(open("/etc/duo/rotation.conf")).get("transform", {})
+        t = {o: (0 if v == "normal" else int(v)) for o, v in tr.items()}
+    except (OSError, ValueError):
+        t = TRANSFORM
+    try:
+        o = open(ORIENT).read().strip()
+        if open("/run/duo/mode").read().strip() == "DSI-1" and o in ("droite", "gauche"):
+            o = "gauche" if o == "droite" else "droite"         # folded, screen A in front (as duo-posture)
+        base = int(open("/etc/duo/camera-rotation").read().strip() or 90) if os.path.exists("/etc/duo/camera-rotation") else 90
+        return (base - t.get(o, 0)) % 360
+    except (OSError, ValueError):
+        r = rotation()                                          # no sensor reading: follow the preview
+        return 0 if r == "normal" else int(r)
+
+
+def turn_photo(deg, since):
+    """wait for the photo the camera saves after `since`, then turn it in place"""
+    from gi.repository import GdkPixbuf
+    path, size = None, -1
+    for _ in range(100):                                    # up to 20 s
+        time.sleep(0.2)
+        if path is None:
+            new = [p for p in glob.glob(os.path.join(PHOTOS, "*.png")) if os.path.getmtime(p) >= since]
+            if new:
+                path = max(new, key=os.path.getmtime)
+            continue
+        cur = os.path.getsize(path)
+        if cur == size and cur > 0:                         # finished writing
+            break
+        size = cur
+    else:
+        return
+    try:
+        pix = GdkPixbuf.Pixbuf.new_from_file(path).rotate_simple(GdkPixbuf.PixbufRotation(deg))
+        tmp = path + ".tmp"
+        pix.savev(tmp, "png", [], [])
+        os.replace(tmp, path)
+        log("turned %s by %d" % (os.path.basename(path), deg))
+    except Exception as e:                                  # keep the original if anything fails
+        log("turn failed: %s" % e)
+
+
+def shoot(*_):
+    global last
+    log("shoot")
+    if time.monotonic() - last < 0.5:
+        return
+    last = time.monotonic()
+    deg = turn_for_shot()
+    log("turn %d" % deg)
+    if deg:
+        threading.Thread(target=turn_photo, args=(deg, time.time() - 1), daemon=True).start()
+    # touching the overlay can take the keyboard focus from the camera: give it back first (wlrctl), then Space
+    subprocess.Popen(["sh", "-c", "wlrctl toplevel focus app_id:matrix-camera 2>/dev/null || wlrctl toplevel focus; "
+                      "sleep 0.1; wtype -k space"])
+
+
+def key_devices():
+    """event nodes whose key bitmap has a volume key"""
+    found, handlers = [], ""
+    for line in open("/proc/bus/input/devices"):
+        if line.startswith("H: Handlers="):
+            handlers = line
+        elif line.startswith("B: KEY="):
+            bits = 0
+            for w in line.split("=", 1)[1].split():
+                bits = (bits << 64) | int(w, 16)
+            if any(bits >> k & 1 for k in KEYS):
+                found += ["/dev/input/" + h for h in handlers.split("=", 1)[1].split() if h.startswith("event")]
+    return found
+
+
+def on_key(fd, _cond):
+    try:
+        data = os.read(fd, SIZE * 16)
+    except OSError:
+        return True
+    for i in range(0, len(data) - SIZE + 1, SIZE):
+        _, _, typ, code, value = struct.unpack(FMT, data[i:i + SIZE])
+        if typ == 1 and code in KEYS and value == 1:
+            shoot()
+    return True
+
+
+for dev in key_devices():
+    try:
+        GLib.io_add_watch(os.open(dev, os.O_RDONLY | os.O_NONBLOCK), GLib.IO_IN, on_key)
+    except OSError:
+        pass
+
+CSS = b"""
+window { background: transparent; }
+button.shutter { min-width: 64px; min-height: 64px; border-radius: 50%; padding: 0;
+  background: rgba(255,255,255,0.92); border: 5px solid rgba(255,255,255,0.45);
+  background-clip: padding-box; box-shadow: 0 0 0 2px rgba(0,0,0,0.25); }
+button.shutter:active { background: rgba(200,200,200,0.95); }
+"""
+prov = Gtk.CssProvider()
+prov.load_from_data(CSS)
+Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), prov, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+win = Gtk.Window()
+GtkLayerShell.init_for_window(win)
+GtkLayerShell.set_layer(win, GtkLayerShell.Layer.OVERLAY)
+GtkLayerShell.set_namespace(win, "duo-camera-shutter")
+E = GtkLayerShell.Edge
+for e in (E.TOP, E.BOTTOM, E.LEFT, E.RIGHT):          # covers the whole picture: a tap anywhere takes the photo
+    GtkLayerShell.set_anchor(win, e, True)             # (touch positions in the rotated nested output are unreliable)
+GtkLayerShell.set_exclusive_zone(win, -1)
+win.set_app_paintable(True)
+visual = win.get_screen().get_rgba_visual()
+if visual:
+    win.set_visual(visual)
+
+# the drawn button only shows where to tap; it goes on the edge that is at the bottom of the screen, which depends
+# on the nested output's transform (written by duo-camera-tournee to ROT; layer-shell uses unrotated coordinates)
+ALIGN = {"normal": (Gtk.Align.CENTER, Gtk.Align.END), "90": (Gtk.Align.START, Gtk.Align.CENTER),
+         "180": (Gtk.Align.CENTER, Gtk.Align.START), "270": (Gtk.Align.END, Gtk.Align.CENTER)}
+btn = Gtk.Button()
+btn.get_style_context().add_class("shutter")
+btn.set_can_focus(False)
+btn.set_margin_start(20); btn.set_margin_end(20); btn.set_margin_top(20); btn.set_margin_bottom(20)
+box = Gtk.EventBox()
+box.set_visible_window(False)
+box.add(btn)
+win.add(box)
+current = None
+
+
+def place():
+    global current
+    try:
+        r = open(ROT).read().strip()
+    except OSError:
+        r = "normal"
+    if r != current:
+        h, v = ALIGN.get(r, ALIGN["normal"])
+        btn.set_halign(h); btn.set_valign(v)
+        current = r
+    return True
+
+
+def on_release(_w, ev):
+    log("release %.0f,%.0f" % (ev.x, ev.y))
+    shoot()
+    return True
+
+
+def on_touch(_w, ev):
+    if ev.type == Gdk.EventType.TOUCH_END:
+        log("touch end %.0f,%.0f" % (ev.x, ev.y))
+        shoot()
+    return True
+
+
+for w in (box, btn):
+    w.add_events(Gdk.EventMask.BUTTON_RELEASE_MASK | Gdk.EventMask.TOUCH_MASK)
+    w.connect("button-release-event", on_release)
+    w.connect("touch-event", on_touch)
+place()
+GLib.timeout_add(300, place)
+win.show_all()
+
+
+def alive():
+    if not os.path.exists(SOCK):
+        Gtk.main_quit()
+        return False
+    return True
+
+
+GLib.timeout_add_seconds(2, alive)
+Gtk.main()

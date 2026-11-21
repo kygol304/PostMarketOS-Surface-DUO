@@ -1,0 +1,116 @@
+#!/usr/bin/python3 -I
+"""duo-session-manager: minimal org.gnome.SessionManager for Phosh (this port runs no gnome-session).
+
+Phosh's power menu (top bar, long press on Power) calls org.gnome.SessionManager Shutdown / Reboot / Logout and
+expects the session manager to show Phosh's own confirmation dialog (org.gnome.Shell
+/org/gnome/SessionManager/EndSessionDialog) and act on ConfirmedShutdown / ConfirmedReboot / ConfirmedLogout.
+Without a session manager those buttons do nothing. Here:
+  Shutdown -> dialog -> sync; poweroff -f     (PID 1 is the initramfs shell: plain poweroff/reboot are ignored)
+  Reboot   -> dialog -> sync; reboot -f
+  Logout   -> dialog -> restart the Phosh session (duo-phosh's loop starts a new one)
+Started by duo-dans-session. Log: /tmp/duo-session-manager.log
+"""
+import os, subprocess, sys, time
+import gi
+gi.require_version("Gio", "2.0")
+from gi.repository import Gio, GLib
+
+NAME, PATH = "org.gnome.SessionManager", "/org/gnome/SessionManager"
+DIALOG_NAME, DIALOG_PATH, DIALOG_IFACE = ("org.gnome.Shell", "/org/gnome/SessionManager/EndSessionDialog",
+                                          "org.gnome.SessionManager.EndSessionDialog")
+XML = """<node><interface name="org.gnome.SessionManager">
+  <method name="Logout"><arg name="mode" type="u" direction="in"/></method>
+  <method name="Shutdown"/>
+  <method name="Reboot"/>
+  <method name="Inhibit"><arg type="s" name="app_id" direction="in"/><arg type="u" name="toplevel_xid" direction="in"/>
+    <arg type="s" name="reason" direction="in"/><arg type="u" name="flags" direction="in"/>
+    <arg type="u" name="inhibit_cookie" direction="out"/></method>
+  <method name="Uninhibit"><arg type="u" name="inhibit_cookie" direction="in"/></method>
+  <method name="CanShutdown"><arg type="b" direction="out"/></method>
+  <method name="IsInhibited"><arg type="u" direction="in"/><arg type="b" direction="out"/></method>
+  <method name="RegisterClient"><arg type="s" name="app_id" direction="in"/><arg type="s" name="client_startup_id" direction="in"/>
+    <arg type="o" name="client_id" direction="out"/></method>
+  <property name="SessionIsActive" type="b" access="read"/>
+  <property name="Renderer" type="s" access="read"/>
+  <signal name="InhibitorAdded"><arg type="o" direction="out"/></signal>
+  <signal name="InhibitorRemoved"><arg type="o" direction="out"/></signal>
+</interface></node>"""
+DIALOG = {"Logout": 0, "Shutdown": 1, "Reboot": 2}
+conn = None
+inhibitors, next_cookie, clients = {}, [1], [0]
+
+
+def log(m):
+    with open("/tmp/duo-session-manager.log", "a") as f:
+        f.write(time.strftime("%H:%M:%S ") + m + "\n")
+
+
+def act(what):
+    log("confirmed: " + what)
+    if what == "Logout":
+        subprocess.run(["/usr/bin/pkill", "-x", "phosh"])
+        return
+    os.sync()
+    time.sleep(0.5)
+    subprocess.run(["/sbin/poweroff" if what == "Shutdown" else "/sbin/reboot", "-f"])
+
+
+def ask(what):
+    """show Phosh's confirmation dialog; if Phosh isn't there, act directly"""
+    try:
+        conn.call_sync(DIALOG_NAME, DIALOG_PATH, DIALOG_IFACE, "Open",
+                       GLib.Variant("(uuuao)", (DIALOG[what], 0, 60, [])), None, 0, 5000)
+        log("dialog opened for " + what)
+    except GLib.Error as e:
+        log("no dialog (%s): acting directly" % e.message)
+        act(what)
+
+
+def on_confirmed(c, sender, path, iface, signal, params):
+    what = {"ConfirmedLogout": "Logout", "ConfirmedShutdown": "Shutdown", "ConfirmedReboot": "Reboot"}.get(signal)
+    if what:
+        GLib.idle_add(lambda: act(what) and False)
+
+
+def on_call(c, sender, path, iface, method, params, inv):
+    if method in ("Shutdown", "Reboot", "Logout"):
+        inv.return_value(None)
+        GLib.idle_add(lambda: ask(method) and False)
+    elif method == "Inhibit":
+        cookie = next_cookie[0]; next_cookie[0] += 1
+        inhibitors[cookie] = params.unpack()
+        inv.return_value(GLib.Variant("(u)", (cookie,)))
+    elif method == "Uninhibit":
+        inhibitors.pop(params.unpack()[0], None)
+        inv.return_value(None)
+    elif method == "CanShutdown":
+        inv.return_value(GLib.Variant("(b)", (True,)))
+    elif method == "IsInhibited":
+        flags = params.unpack()[0]
+        inv.return_value(GLib.Variant("(b)", (any(i[3] & flags for i in inhibitors.values()),)))
+    elif method == "RegisterClient":
+        clients[0] += 1
+        inv.return_value(GLib.Variant("(o)", ("/org/gnome/SessionManager/Client%d" % clients[0],)))
+    else:
+        inv.return_dbus_error("org.freedesktop.DBus.Error.UnknownMethod", method)
+
+
+def on_get(c, sender, path, iface, prop):
+    return GLib.Variant("b", True) if prop == "SessionIsActive" else GLib.Variant("s", "")
+
+
+def on_bus(c, name):
+    global conn
+    conn = c
+    c.register_object(PATH, Gio.DBusNodeInfo.new_for_xml(XML).interfaces[0], on_call, on_get, None)
+    c.signal_subscribe(None, DIALOG_IFACE, None, DIALOG_PATH, None, Gio.DBusSignalFlags.NONE, on_confirmed)
+    log("org.gnome.SessionManager ready")
+
+
+def on_lost(c, name):
+    log("name lost (another session manager running?): exiting")
+    sys.exit(0)
+
+
+Gio.bus_own_name(Gio.BusType.SESSION, NAME, Gio.BusNameOwnerFlags.NONE, on_bus, None, on_lost)
+GLib.MainLoop().run()

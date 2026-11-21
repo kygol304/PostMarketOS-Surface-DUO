@@ -4,6 +4,6 @@
 mkdir -p "$HOME/Bilder/Kamera" "$HOME/Images"
 [ -e "$HOME/Images/Caméra" ] || ln -s ../Bilder/Kamera "$HOME/Images/Caméra"
 grep -qx Bilder "$HOME/.hidden" 2>/dev/null || echo Bilder >> "$HOME/.hidden"   # dossier allemand masqué dans Fichiers
-export MATRIX_LANGUAGE=en   # ici, /usr/share/matrix/sprache/en.tsv contient la traduction allemand -> FRANÇAIS
+export MATRIX_LANGUAGE=en   # ici, /usr/share/matrix/sprache/en.tsv contient la traduction allemand -> anglais (fr.tsv : français)
 export LD_PRELOAD="/usr/local/lib/libduo-isoc23.so${LD_PRELOAD:+ $LD_PRELOAD}"
 exec /usr/local/bin/matrix-camera "$@"

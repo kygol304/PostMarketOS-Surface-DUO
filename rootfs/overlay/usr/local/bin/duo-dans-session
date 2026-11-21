@@ -30,4 +30,9 @@ gsettings set sm.puri.phosh favorites "['org.gnome.Calls.desktop', 'sm.puri.Chat
  gnome-calls --daemon > /tmp/calls.log 2>&1 &
  chatty --gapplication-service > /tmp/chatty.log 2>&1 &
  gnome-clocks --gapplication-service > /tmp/clocks.log 2>&1 &) &   # alarmes même appli fermée
-exec phoc -C /etc/duo/phoc.ini -E "sh -c 'squeekboard & exec /usr/libexec/phosh -U'"
+(/usr/local/bin/duo-brightness > /tmp/duo-brightness.log 2>&1 &)   # curseur de luminosité de Phosh (à la place de gsd-power)
+(/usr/local/bin/duo-session-manager > /dev/null 2>&1 &)   # Éteindre / Redémarrer du menu de Phosh (pas de gnome-session)
+# échelle de l'interface : /etc/duo/scale (défaut 2 ; 3 = taille prévue par Phosh pour ~400 ppi, cibles plus grandes)
+S=$(head -c 8 /etc/duo/scale 2>/dev/null | tr -cd '0-9.'); [ -n "$S" ] || S=2
+mkdir -p /run/duo; sed "s/^scale=.*/scale=$S/" /etc/duo/phoc.ini > /run/duo/phoc.ini
+exec phoc -C /run/duo/phoc.ini -E "sh -c 'squeekboard & exec /usr/libexec/phosh -U'"

@@ -74,12 +74,39 @@ Android then starts from a fresh setup screen.
 
 - **Lock screen:** enabling Phosh's lock screen makes the display driver crash (screens freeze or go black).
   The lock screen is therefore **disabled** for now. Help welcome!
-- Camera preview in portrait is obtained by running the camera inside a rotated nested compositor
-  (controls end up on the side); direction set in `/etc/duo/camera-rotation`.
+- The camera runs inside a nested compositor whose rotation follows the screen's (portrait, landscape, upside down),
+  so the preview stays upright; base direction in `/etc/duo/camera-rotation` (90, or 270 if upside down).
+  In that layout the app draws no shutter: tap anywhere on the picture, or press a volume button
+  (`duo-camera-declencheur`, an overlay that sends the app's Space key). Photos are then turned the way the phone
+  was held (from the accelerometer, `/run/duo/orientation` written by duo-posture).
 - The USB network link to the PC can drop during big transfers (the installer sends data in verified chunks).
 - Touch: the outer columns of the left panel pull touches inwards; an edge stretch compensates (`DUO_X_STRETCH_*`).
-- Firefox shows a sandbox warning (old 4.14 kernel); Chromium runs with `--no-sandbox`.
+  Panels differ: measure yours with `duo-touch-test A` / `duo-touch-test B` and set stretches/offsets in
+  `/etc/duo/touch.conf`.
+- Browsers can't use their user-namespace sandbox: the session runs in a chroot, where Linux refuses user namespaces.
+  Firefox keeps its seccomp sandbox and no longer shows a warning bar about it (`defaults/pref/duo-sandbox.js`);
+  Chromium runs with `--no-sandbox` (everything runs as root) without the warning bar (managed policy).
 - Untested on real hardware yet: USB accessories, GPS outdoor fix, hotspot with a connected client.
+
+## Recent fixes
+
+- **Brightness slider** in Phosh's top-bar menu works (`duo-brightness`: Phosh 0.47 only talks to gsd-power,
+  which this port doesn't run); Settings → Power now also shows *Automatic Screen Brightness*.
+- **Power off / Restart / Log out** from Phosh's menu or a long press on Power work (`duo-session-manager`,
+  a minimal `org.gnome.SessionManager`; there is no gnome-session).
+- **Flatpak apps** installed from GNOME Software / Flathub show up in the app grid (`XDG_DATA_DIRS`) and start:
+  the session is chrooted and Linux refuses user namespaces inside a chroot, so `duo-bwrap` (`FLATPAK_BWRAP`) runs
+  bubblewrap without `--unshare-user` (root needs none for the rest of the sandbox). Electron apps also get
+  `ELECTRON_DISABLE_SANDBOX=1` and Wayland (`/var/lib/flatpak/overrides/global`); older Electron builds may still
+  need `--ozone-platform=wayland` on their launcher line. Tested with FreeTube.
+- **Rotation** reacts faster: 0.35 s hold instead of 0.8 s, at a slightly smaller tilt (`/etc/duo/rotation.conf`).
+- **Touch**: per-panel calibration file and test tool (above); taps register ~20 ms sooner (`DUO_QUIET_MS`).
+- **Bigger UI option**: `/etc/duo/scale` sets the interface scale (default 2; 2.75–3 gives finger-sized buttons
+  and icons). phoc's config is generated from it at login, and duoheat/duo-posture follow it.
+- **Home bar**: only touches starting near the white handle trigger it; elsewhere along the bottom edge they go to
+  the app (`DUO_HOME_HALF_WIDTH` in `/etc/duo/touch.conf`, 0 = whole bar as before).
+- **Camera**: English strings (`sprache/en.tsv`; the French ones moved to `fr.tsv`).
+- **GPU** minimum clock 345 MHz instead of 257 MHz, so animations and scrolling start faster.
 
 ## Contributing
 
